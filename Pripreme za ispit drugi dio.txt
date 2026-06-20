@@ -1,0 +1,513 @@
+1. Lab: Deploy Web Applications
+Cilj laba
+
+Deployati aplikaciju Famous Authors / Famous Quotes koja ima:
+
+MySQL bazu
+frontend aplikaciju
+secret za database podatke
+persistent storage za bazu
+service i route prema van
+ImageStream za MySQL image, da deployment ne ovisi direktno o registry URL-u
+Što smo radili
+1. Pokrenuli lab
+lab start compreview-deploy
+
+Provjera resursa:
+
+cat /home/student/DO0018L/labs/compreview-deploy/resources.txt
+
+Login:
+
+oc login -u developer -p developer https://api.ocp4.example.com:6443
+2. Kreirali projekt
+oc new-project review
+
+Ako već postoji:
+
+oc project review
+3. Kreirali secret za MySQL parametre
+
+Secret se zvao:
+
+dbparams
+
+Naredba:
+
+oc create secret generic dbparams \
+  --from-literal=user=operator1 \
+  --from-literal=password=redhat123 \
+  --from-literal=database=quotesdb
+
+Provjera:
+
+oc get secret dbparams
+4. Kreirali ImageStream za MySQL
+
+Specifikacija je tražila da deployment koristi kratko ime:
+
+mysql8:1
+
+a ne direktno registry URL.
+
+oc import-image mysql8:1 \
+  --from=registry.ocp4.example.com:8443/rhel9/mysql-80:1-228 \
+  --confirm
+
+Omogućili lokalni image lookup:
+
+oc set image-lookup mysql8
+
+Provjera:
+
+oc get is mysql8
+oc get istag mysql8:1
+5. Kreirali PVC za bazu
+
+PVC:
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: quotesdb-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: lvms-vg1
+  resources:
+    requests:
+      storage: 2Gi
+
+Naredba:
+
+oc create -f pvc.yaml
+
+Ili direktno:
+
+oc create -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: quotesdb-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: lvms-vg1
+  resources:
+    requests:
+      storage: 2Gi
+EOF
+
+Bitna stvar: PVC je prvo bio Pending, ali to nije bio problem jer storage class ima:
+
+WaitForFirstConsumer
+
+To znači da se volume veže tek kad se napravi pod koji ga koristi.
+
+6. Deployali MySQL bazu
+
+Deployment quotesdb koristio je:
+
+image: mysql8:1
+env varijable iz secreta
+mount na /var/lib/mysql
+PVC quotesdb-pvc
+
+Najvažniji dio:
+
+env:
+  - name: MYSQL_USER
+    valueFrom:
+      secretKeyRef:
+        name: dbparams
+        key: user
+  - name: MYSQL_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: dbparams
+        key: password
+  - name: MYSQL_DATABASE
+    valueFrom:
+      secretKeyRef:
+        name: dbparams
+        key: database
+
+Mount:
+
+volumeMounts:
+  - name: mysql-storage
+    mountPath: /var/lib/mysql
+
+PVC:
+
+volumes:
+  - name: mysql-storage
+    persistentVolumeClaim:
+      claimName: quotesdb-pvc
+7. Dodali trigger za redeploy baze
+
+Ovo je bitno jer lab traži da se baza redeploya kad se promijeni mysql8:1.
+
+oc set triggers deployment/quotesdb \
+  --from-image=mysql8:1 \
+  --containers=quotesdb
+8. Kreirali service za bazu
+
+Frontend mora do baze preko hostnamea:
+
+quotesdb
+
+Zato service mora biti baš quotesdb.
+
+oc expose deployment quotesdb --port=3306 --target-port=3306
+
+Provjera:
+
+oc get svc quotesdb
+9. Deployali frontend
+
+Image:
+
+registry.ocp4.example.com:8443/redhattraining/famous-quotes:2-42
+
+Frontend env varijable:
+
+QUOTES_USER
+QUOTES_PASSWORD
+QUOTES_DATABASE
+QUOTES_HOSTNAME
+
+Bitno:
+
+- name: QUOTES_HOSTNAME
+  value: quotesdb
+10. Kreirali frontend service i route
+
+Service:
+
+oc expose deployment frontend --port=8000 --target-port=8000
+
+Route:
+
+oc expose svc frontend --hostname=frontend-review.apps.ocp4.example.com
+
+Test:
+
+curl -I http://frontend-review.apps.ocp4.example.com
+
+Očekivano:
+
+HTTP/1.1 200 OK
+11. Testirali promjenu MySQL image taga
+
+Prvo smo pokušali oc import-image, ali OpenShift nije promijenio source taga jer tag već postoji.
+
+Ispravna naredba je bila:
+
+oc tag registry.ocp4.example.com:8443/rhel9/mysql-80:1-237 mysql8:1
+
+Provjera:
+
+oc describe is mysql8
+oc rollout status deployment/quotesdb
+oc get pods
+12. Grade i finish
+lab grade compreview-deploy
+lab finish compreview-deploy
+2. Lab: Troubleshoot and Scale Applications
+Cilj laba
+
+Popraviti već deployanu aplikaciju koja je bila pokvarena i pripremiti je za “production-like” stanje:
+
+pronaći CPU-consuming workload
+popraviti MySQL pod
+promijeniti MySQL image
+dodati resource requests/limits
+dodati readiness i liveness probes
+skalirati frontend zbog high availability
+Što smo radili
+1. Pokrenuli lab
+lab start compreview-scale
+
+Login:
+
+oc login -u developer -p developer https://api.ocp4.example.com:6443
+
+Projekt:
+
+oc project compreview-scale
+2. Provjerili stanje
+oc get pods
+oc get deployments
+oc get svc
+oc get route
+
+Vidjeli smo:
+
+frontend   CrashLoopBackOff
+quotesdb   CrashLoopBackOff
+3. Provjerili logove MySQL baze
+oc logs deployment/quotesdb
+
+Greška je bila jasna: nisu bile definirane MySQL env varijable.
+
+Nedostajale su:
+
+MYSQL_USER
+MYSQL_PASSWORD
+MYSQL_DATABASE
+4. Popravili MySQL env varijable
+oc set env deployment/quotesdb \
+  MYSQL_USER=operator1 \
+  MYSQL_PASSWORD=redhat123 \
+  MYSQL_DATABASE=quotes
+
+Pazi razliku: u prvom labu baza se zvala quotesdb, u drugom labu baza se zvala:
+
+quotes
+
+To je tipična zamka.
+
+5. Promijenili MySQL image
+
+Specifikacija je tražila novi image:
+
+registry.ocp4.example.com:8443/rhel9/mysql-80:1-237
+
+Kod nas se container zvao mysql-80, pa smo koristili:
+
+oc set image deployment/quotesdb \
+  mysql-80=registry.ocp4.example.com:8443/rhel9/mysql-80:1-237
+
+Rollout:
+
+oc rollout status deployment/quotesdb
+
+Provjera:
+
+oc get pods
+oc logs deployment/quotesdb --tail=20
+6. Restartali frontend
+
+Frontend je padao jer se pokušao spojiti na bazu dok baza još nije bila spremna.
+
+Restart:
+
+oc rollout restart deployment/frontend
+
+Rollout:
+
+oc rollout status deployment/frontend
+
+Test route:
+
+curl -I http://frontend-compreview-scale.apps.ocp4.example.com
+
+Očekivano:
+
+HTTP/1.1 200 OK
+7. Postavili resource requests/limits za bazu
+
+Za quotesdb:
+
+requests:
+  cpu: 200m
+  memory: 256Mi
+
+limits:
+  cpu: 500m
+  memory: 1Gi
+
+Naredba:
+
+oc set resources deployment/quotesdb \
+  --requests=cpu=200m,memory=256Mi \
+  --limits=cpu=500m,memory=1Gi
+
+Provjera:
+
+oc describe deployment quotesdb | grep -A8 -i "requests"
+8. Postavili resource requests/limits za frontend
+
+Za frontend:
+
+requests:
+  cpu: 200m
+  memory: 256Mi
+
+limits:
+  cpu: 500m
+  memory: 512Mi
+
+Naredba:
+
+oc set resources deployment/frontend \
+  --requests=cpu=200m,memory=256Mi \
+  --limits=cpu=500m,memory=512Mi
+9. Dodali probes za MySQL
+
+Za MySQL smo koristili TCP probe na portu 3306.
+
+Readiness:
+
+oc set probe deployment/quotesdb \
+  --readiness \
+  --open-tcp=3306 \
+  --initial-delay-seconds=10 \
+  --period-seconds=10
+
+Liveness:
+
+oc set probe deployment/quotesdb \
+  --liveness \
+  --open-tcp=3306 \
+  --initial-delay-seconds=30 \
+  --period-seconds=10
+
+Bitna lekcija: ne koristi se --tcp-socket, nego:
+
+--open-tcp
+
+Provjera:
+
+oc describe deployment quotesdb | grep -A12 -i "readiness"
+oc describe deployment quotesdb | grep -A12 -i "liveness"
+10. Dodali probes za frontend
+
+Frontend readiness:
+
+oc set probe deployment/frontend \
+  --readiness \
+  --get-url=http://:8000/status \
+  --initial-delay-seconds=5 \
+  --period-seconds=10
+
+Frontend liveness:
+
+oc set probe deployment/frontend \
+  --liveness \
+  --get-url=http://:8000/env \
+  --initial-delay-seconds=10 \
+  --period-seconds=10
+
+Provjera:
+
+oc describe deployment frontend | grep -A12 -i "readiness"
+oc describe deployment frontend | grep -A12 -i "liveness"
+11. Skalirali frontend za high availability
+
+Bazu nismo skalirali jer MySQL s PVC-om nije nešto što se samo tako diže na više replika.
+
+Frontend smo skalirali na 2 replike:
+
+oc scale deployment/frontend --replicas=2
+
+Provjera:
+
+oc get deployment frontend
+oc get pods
+
+Očekivano:
+
+frontend   2/2
+12. Provjerili CPU potrošnju
+oc adm top pods
+
+Kod nas nije bilo dodatnog workload-a koji troši CPU, vidjeli smo samo:
+
+frontend
+quotesdb
+
+I potrošnja je bila mala.
+
+13. Grade i finish
+lab grade compreview-scale
+lab finish compreview-scale
+Najvažnije naredbe koje moraš znati
+Osnovna dijagnostika
+oc get pods
+oc get deployments
+oc get svc
+oc get route
+oc describe pod <pod-name>
+oc logs deployment/<deployment-name>
+oc logs deployment/<deployment-name> --previous
+Rollout
+oc rollout status deployment/<name>
+oc rollout restart deployment/<name>
+Secret
+oc create secret generic dbparams \
+  --from-literal=user=operator1 \
+  --from-literal=password=redhat123 \
+  --from-literal=database=quotesdb
+ImageStream
+oc import-image mysql8:1 \
+  --from=registry.ocp4.example.com:8443/rhel9/mysql-80:1-228 \
+  --confirm
+oc set image-lookup mysql8
+oc tag registry.ocp4.example.com:8443/rhel9/mysql-80:1-237 mysql8:1
+Promjena imagea deploymenta
+oc set image deployment/quotesdb \
+  mysql-80=registry.ocp4.example.com:8443/rhel9/mysql-80:1-237
+Env varijable
+oc set env deployment/quotesdb \
+  MYSQL_USER=operator1 \
+  MYSQL_PASSWORD=redhat123 \
+  MYSQL_DATABASE=quotes
+Service
+oc expose deployment quotesdb --port=3306 --target-port=3306
+oc expose deployment frontend --port=8000 --target-port=8000
+Route
+oc expose svc frontend --hostname=frontend-review.apps.ocp4.example.com
+Resources
+oc set resources deployment/quotesdb \
+  --requests=cpu=200m,memory=256Mi \
+  --limits=cpu=500m,memory=1Gi
+oc set resources deployment/frontend \
+  --requests=cpu=200m,memory=256Mi \
+  --limits=cpu=500m,memory=512Mi
+Probes
+
+MySQL:
+
+oc set probe deployment/quotesdb \
+  --readiness \
+  --open-tcp=3306 \
+  --initial-delay-seconds=10 \
+  --period-seconds=10
+oc set probe deployment/quotesdb \
+  --liveness \
+  --open-tcp=3306 \
+  --initial-delay-seconds=30 \
+  --period-seconds=10
+
+Frontend:
+
+oc set probe deployment/frontend \
+  --readiness \
+  --get-url=http://:8000/status \
+  --initial-delay-seconds=5 \
+  --period-seconds=10
+oc set probe deployment/frontend \
+  --liveness \
+  --get-url=http://:8000/env \
+  --initial-delay-seconds=10 \
+  --period-seconds=10
+Skaliranje
+oc scale deployment/frontend --replicas=2
+Test aplikacije
+curl -I http://frontend-review.apps.ocp4.example.com
+curl -I http://frontend-compreview-scale.apps.ocp4.example.com
+Najbitnije lekcije iz ova dva laba
+
+Prva lekcija: ne popravljaj frontend prije baze. Ako je baza mrtva, frontend logovi često izgledaju kao frontend problem, a zapravo je backend problem.
+
+Druga lekcija: OpenShift ImageStream služi da deployment koristi stabilno ime, npr. mysql8:1, a ne direktni registry path.
+
+Treća lekcija: PVC Pending nije uvijek greška. Ako storage class ima WaitForFirstConsumer, volume se veže tek kad pod krene koristiti claim.
+
+Četvrta lekcija: readiness i liveness nisu isto. Readiness kaže “mogu li primati promet”, liveness kaže “jesam li još živ ili me treba restartati”.
+
+Peta lekcija: skaliraš frontend, ne MySQL naslijepo. MySQL s persistent volumeom nije običan stateless workload.
+
+Šesta lekcija: grading labovi su strogi oko imena. Ako traži quotesdb, dbparams, frontend, port 8000, path /status, path /env — nema kreativnosti. Ime mora biti točno.

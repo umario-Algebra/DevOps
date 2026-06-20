@@ -1,0 +1,552 @@
+Napravi update
+
+sudo yum check-update
+sudo yum update -y
+
+sudo dnf check-update
+sudo dnf update -y
+
+
+
+PODMAN
+
+1. Podman naredbe koje smo koristili
+Provjera Podmana i Composea
+podman --version
+podman compose version
+podman ps
+podman ps -a
+Radni folder za Compose vježbu
+mkdir -p ~/do188/chapter7-compose
+cd ~/do188/chapter7-compose
+pwd
+Compose aplikacija: MariaDB + Adminer
+
+Napravili smo compose.yaml:
+
+cat > compose.yaml <<'EOF'
+services:
+  db:
+    image: docker.io/library/mariadb:10.11
+    container_name: todo-db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: todo
+      MYSQL_USER: todo
+      MYSQL_PASSWORD: todopass
+    volumes:
+      - db-data:/var/lib/mysql
+
+  adminer:
+    image: docker.io/library/adminer:latest
+    container_name: todo-adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+volumes:
+  db-data:
+EOF
+
+Provjera datoteke:
+
+cat compose.yaml
+
+Pokretanje aplikacije:
+
+podman compose up -d
+
+Provjera containera:
+
+podman ps
+
+Provjera web servisa:
+
+curl -I http://localhost:8080
+
+Provjera DNS-a između containera:
+
+podman exec -it todo-adminer getent hosts db
+
+Provjera logova baze:
+
+podman logs todo-db --tail=10
+
+Compose status:
+
+podman compose ps
+
+Compose logovi:
+
+podman compose logs --tail=20
+
+Gašenje Compose aplikacije:
+
+podman compose down
+
+Ponovno dizanje:
+
+podman compose up -d
+Test baze unutar MariaDB containera
+
+Ulazak u bazu:
+
+podman exec -it todo-db mariadb -u todo -ptodopass todo
+
+SQL naredbe:
+
+CREATE TABLE notes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  text VARCHAR(255)
+);
+
+INSERT INTO notes (text) VALUES ('DO188 compose test');
+
+SELECT * FROM notes;
+
+Izlaz:
+
+exit;
+2. Podman Comprehensive Review naredbe
+Novi folder
+mkdir -p ~/do188/comprehensive-review
+cd ~/do188/comprehensive-review
+pwd
+Flask aplikacija
+
+app.py:
+
+cat > app.py <<'EOF'
+import os
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    message = os.environ.get("APP_MESSAGE", "DO188 Comprehensive Review")
+    return f"<h1>{message}</h1>\n"
+
+@app.route("/health")
+def health():
+    return "OK\n"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
+EOF
+
+requirements.txt:
+
+cat > requirements.txt <<'EOF'
+flask
+EOF
+
+Containerfile:
+
+cat > Containerfile <<'EOF'
+FROM docker.io/library/python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+
+EXPOSE 8080
+
+CMD ["python", "app.py"]
+EOF
+
+Provjera datoteka:
+
+ls -l
+Build imagea
+podman build -t do188-review-app:1.0 .
+
+Provjera imagea:
+
+podman images | grep do188-review-app
+Pokretanje containera
+podman run -d \
+  --name review-app \
+  -p 8081:8080 \
+  -e APP_MESSAGE="DO188 review works" \
+  do188-review-app:1.0
+
+Provjera:
+
+podman ps
+curl http://localhost:8081
+curl http://localhost:8081/health
+
+Očekivano:
+
+<h1>DO188 review works</h1>
+
+i:
+
+OK
+
+
+
+
+KUBERNETES
+
+. Kubernetes UI — kako raditi preko Dashboarda
+
+Ovdje smo radili preko Kubernetes Dashboarda, ne preko OpenShift konzole.
+
+Kod tebe je klaster:
+
+Minikube
+
+i koristiš Kubernetes Dashboard.
+
+4. Kubernetes UI — Chapter 8 / DO188
+Namespace
+
+U Dashboardu gore lijevo imaš namespace dropdown.
+
+Odabrali smo / koristili:
+
+do188-chapter8
+
+Ako namespace ne postoji, napraviš ga preko plavog +:
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: do188-chapter8
+Deployment
+
+U Dashboardu klikneš gore desno plavi +.
+
+Zalijepiš YAML:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-kube
+  namespace: do188-chapter8
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-kube
+  template:
+    metadata:
+      labels:
+        app: hello-kube
+    spec:
+      containers:
+        - name: nginx
+          image: docker.io/library/nginx:latest
+          ports:
+            - containerPort: 80
+
+Nakon toga provjeriš:
+
+Workloads → Deployments
+
+Trebaš vidjeti:
+
+hello-kube
+Pods 1/1
+
+Zatim:
+
+Workloads → Pods
+
+Pod mora biti:
+
+Running
+Service za Deployment
+
+Opet plavi +.
+
+Zalijepiš:
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-kube
+  namespace: do188-chapter8
+spec:
+  type: NodePort
+  selector:
+    app: hello-kube
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+Bitno: kod ports: mora biti crtica:
+
+ports:
+  - protocol: TCP
+
+Ne smije biti:
+
+ports:
+  protocol: TCP
+
+To je bila greška koju si dobio.
+
+Provjera Servicea u UI
+
+Idi na:
+
+Service → Services
+
+Klikni:
+
+hello-kube
+
+Tamo gledaš:
+
+Type: NodePort
+Selector: app=hello-kube
+Endpoints
+NodePort
+
+Kod tebe je za hello-kube NodePort bio:
+
+31118
+
+Test iz terminala:
+
+curl http://192.168.49.2:31118
+Skaliranje Deploymenta kroz UI
+
+Idi na:
+
+Workloads → Deployments
+
+Klikni:
+
+hello-kube
+
+Nađi akcijski meni, obično tri točkice ili opcija:
+
+Scale
+
+Promijeni broj replika:
+
+1 → 3
+
+Provjera:
+
+Workloads → Pods
+
+Trebaš vidjeti 3 poda:
+
+hello-kube-...
+hello-kube-...
+hello-kube-...
+
+Svi moraju biti:
+
+Running
+Self-healing test kroz UI
+
+Idi na:
+
+Workloads → Pods
+
+Klikni jedan pod:
+
+hello-kube-...
+
+Klikni delete/trash ikonu.
+
+Kubernetes će ga obrisati, ali Deployment/ReplicaSet će automatski napraviti novi.
+
+Na kraju opet moraš imati:
+
+3 Running pods
+
+To dokazuje self-healing.
+
+5. Kubernetes UI — DO180 Chapter 1
+
+Napravili smo novi namespace:
+
+do180-chapter1
+
+Ako ga radiš kroz UI, plavi +:
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: do180-chapter1
+
+Zatim gore u namespace dropdown odabereš:
+
+do180-chapter1
+Deployment za DO180
+
+Plavi +, pa YAML:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: do180-nginx
+  namespace: do180-chapter1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: do180-nginx
+  template:
+    metadata:
+      labels:
+        app: do180-nginx
+    spec:
+      containers:
+        - name: nginx
+          image: docker.io/library/nginx:latest
+          ports:
+            - containerPort: 80
+
+Provjera:
+
+Workloads → Deployments
+
+Mora pisati:
+
+do180-nginx
+Pods 1/1
+
+Zatim:
+
+Workloads → Pods
+
+Pod mora biti:
+
+Running
+Service za DO180
+
+Plavi +, pa YAML:
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: do180-nginx
+  namespace: do180-chapter1
+spec:
+  type: NodePort
+  selector:
+    app: do180-nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+Provjera:
+
+Service → Services → do180-nginx
+
+Kod tebe je NodePort bio:
+
+32451
+
+Test iz terminala:
+
+curl -I http://192.168.49.2:32451
+
+Očekivano:
+
+HTTP/1.1 200 OK
+Server: nginx
+6. Što moraš znati objasniti
+
+Ovo je najvažnije. Naredbe su manje bitne ako ne znaš objasniti logiku.
+
+Podman
+Podman lokalno pokreće containere na jednoj mašini.
+
+Primjeri:
+
+podman run
+podman ps
+podman logs
+podman exec
+podman build
+podman compose up -d
+podman compose down
+Kubernetes
+Kubernetes ne pokrećeš ručno container po container.
+Kubernetesu opišeš željeno stanje.
+
+Lanac:
+
+Deployment → ReplicaSet → Pod → Container
+
+Service lanac:
+
+Service → selector → Endpoint → Pod
+
+Primjer:
+
+Service selector app=do180-nginx
+traži Pod koji ima label app=do180-nginx
+i šalje promet na njega.
+7. Najčešće greške koje si imao / koje trebaš izbjeći
+Greška 1 — miješanje Podmana i Kubernetes Dashboarda
+
+Podman nije u Dashboardu.
+
+Podman = lokalni CLI alat
+Kubernetes Dashboard = UI za Kubernetes objekte
+Greška 2 — krivi YAML za Service ports
+
+Krivo:
+
+ports:
+  protocol: TCP
+  port: 80
+  targetPort: 80
+
+Ispravno:
+
+ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+Greška 3 — rad u krivom namespaceu
+
+Uvijek prvo provjeri gore u Dashboardu namespace:
+
+do188-chapter8
+
+ili:
+
+do180-chapter1
+
+Nemoj bezveze raditi u:
+
+default
+kube-system
+kubernetes-dashboard
+Greška 4 — očekivati da je Pod direktno dostupan izvana
+
+Pod IP je interni.
+
+Zato trebaš Service:
+
+Pod IP = interno
+Service = stabilni pristup
+NodePort = pristup izvana preko node IP-a i porta
+
+Kod tebe:
+
+Minikube IP: 192.168.49.2
+hello-kube NodePort: 31118
+do180-nginx NodePort: 32451
+
+Test:
+
+curl http://192.168.49.2:31118
+curl http://192.168.49.2:32451
