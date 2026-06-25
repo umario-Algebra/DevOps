@@ -1,5 +1,83 @@
 chmod +x dashboard.sh
 
+
+export OPENAI_API_KEY=""
+
+cat > ~/test.sh <<'EOF'
+#!/bin/bash
+
+MODEL="gpt-5-chat-latest"
+
+if [ -z "$OPENAI_API_KEY" ]; then
+  echo "ERROR: OPENAI_API_KEY is not set."
+  echo "Run this first:"
+  echo 'export OPENAI_API_KEY="your_api_key"'
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "ERROR: jq is not installed."
+  echo "Ubuntu/Debian: sudo apt install jq -y"
+  echo "RHEL/Rocky: sudo dnf install jq -y"
+  exit 1
+fi
+
+echo "ChatGPT CLI started. Model: $MODEL"
+echo "Type your question and press Enter."
+echo "Type exit to quit."
+echo
+
+while true; do
+  read -r QUESTION
+
+  if [ "$QUESTION" = "exit" ]; then
+    echo "Exit."
+    break
+  fi
+
+  if [ -z "$QUESTION" ]; then
+    continue
+  fi
+
+  RESPONSE=$(curl -s https://api.openai.com/v1/responses \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -d "$(jq -n \
+      --arg model "$MODEL" \
+      --arg input "$QUESTION" \
+      '{
+        model: $model,
+        max_output_tokens: 1000,
+        input: $input
+      }')")
+
+  ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty')
+
+  if [ -n "$ERROR" ]; then
+    echo "API error: $ERROR"
+    echo
+    continue
+  fi
+
+  STATUS=$(echo "$RESPONSE" | jq -r '.status // empty')
+  INCOMPLETE=$(echo "$RESPONSE" | jq -r '.incomplete_details.reason // empty')
+
+  ANSWER=$(echo "$RESPONSE" | jq -r '.output[]? | select(.type=="message") | .content[]? | select(.type=="output_text") | .text' 2>/dev/null)
+
+  if [ -n "$ANSWER" ]; then
+    echo "$ANSWER"
+    echo
+  else
+    echo "No text answer returned."
+    echo "Status: $STATUS"
+    echo "Reason: $INCOMPLETE"
+    echo
+  fi
+done
+EOF
+
+chmod +x ~/test.sh
+
 cat > ~/test.sh <<'EOF'
 #!/bin/bash
 
